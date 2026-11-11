@@ -31,6 +31,45 @@ function norm(s) {
   UNITS[w.unit].words.push(w.i);
 });
 
+/* 联想与起源：data/notes-*.js，每行：印尼语|联想|起源
+   起源用代码缩写：N 固有词；S/A/P/D/E/H… 借自某语言（X:原词=原义）；
+   R:词根 派生词；C:甲+乙 合成词；分号后是补充说明；其他文字原样显示 */
+(window.NOTE_DATA || '').split('\n').forEach(function (line) {
+  line = line.trim();
+  if (!line) return;
+  var p = line.split('|'), w = BYN[norm(p[0])];
+  if (!w) return;
+  w.memo = (p[1] || '').trim();
+  w.origin = (p[2] || '').trim();
+});
+var SRC = { S: '梵语', A: '阿拉伯语', P: '葡萄牙语', D: '荷兰语', E: '英语', H: '闽南语', J: '爪哇语', T: '泰米尔语',
+            F: '波斯语', I: '印地语', K: '古爪哇语', L: '拉丁语', G: '希腊语', B: '巽他语或雅加达方言', Z: '汉语' };
+function shortZh(x) { return x.zh.replace(/（[^）]*）/g, '').split(/[；、]/)[0]; }
+function part(s) {                       // “词=释义”，没写释义时去词库里查
+  var q = s.split('='), x = BYN[norm(q[0])];
+  return q[0] + (q[1] ? '（' + q[1] + '）' : x ? '（' + shortZh(x) + '）' : '');
+}
+function originText(w) {
+  var o = w.origin || '';
+  if (!o) return '';
+  var m = /^([A-Z?])(?::([^;]*))?(?:;(.*))?$/.exec(o), t;
+  if (!m) return o;
+  var c = m[1], body = m[2] || '', extra = m[3] || '';
+  if (c === 'N') t = '印尼语固有词（南岛语系）';
+  else if (c === '?') t = '来源不确定';
+  else if (c === 'R') t = '由词根 ' + part(body) + ' 派生';
+  else if (c === 'C') t = '合成词：' + body.split('+').map(part).join(' + ');
+  else if (SRC[c]) t = '来自' + SRC[c] + (body ? ' ' + part(body) : '');
+  else return o;
+  return t + (extra ? '。' + extra : '');
+}
+function notesHtml(w) {
+  var memo = [w.hint, w.memo].filter(Boolean), o = originText(w), h = '';
+  if (memo.length) h += '<div class="hint">' + memo.map(esc).join('<br>') + '</div>';
+  if (o) h += '<div class="hint origin">' + esc(o) + '</div>';
+  return h;
+}
+
 /* =====================================================================
    存档（localStorage）
    ===================================================================== */
@@ -42,6 +81,7 @@ function defaults() {
   return {
     cards: {},            // id -> {iv 间隔天数, ease 难度系数, due 到期日, reps, lapses}
     known: {},            // id -> 1：已经会的词，被“斩”掉，不再出现
+    fav: {},              // id -> 1：收藏的词（不会的、想重点练的）
     notes: {},            // id -> 自己写的联想
     settings: { newPerDay: 20, autoPlay: true, rate: 0.85, voiceURI: '', readEx: true, useRec: true },
     daily: { day: 0, newDone: 0, revDone: 0 },
@@ -411,6 +451,11 @@ function toast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(function () { el.classList.remove('show'); }, 2600);
 }
+function favCount() { var n = 0; for (var k in S.fav) if (BYN[norm(k)]) n++; return n; }
+function favBtn(w) {
+  var on = !!S.fav[w.id];
+  return '<button type="button" class="fav' + (on ? ' on' : '') + '" data-act="fav" data-i="' + w.i + '" title="收藏" aria-label="收藏" aria-pressed="' + on + '">' + (on ? '★' : '☆') + '</button>';
+}
 function status(w) {
   if (S.known[w.id]) return 'k';
   var c = S.cards[w.id];
@@ -424,7 +469,7 @@ function wordCard(w, withNote) {
     '<div class="zh">' + esc(w.zh) + '</div>' +
     (w.ex ? '<div class="ex" data-act="say" data-t="' + esc(w.ex) + '" title="点击朗读例句">' + exHtml(w) +
             '<small>' + esc(w.exzh) + '</small></div>' : '') +
-    (w.hint ? '<div class="hint">' + esc(w.hint) + '</div>' : '') +
+    notesHtml(w) +
     (withNote ? '<textarea class="note" rows="2" data-note="' + esc(w.id) + '" placeholder="写下你自己的联想（谐音、画面、小故事）——自己编的记得最牢">' +
                 esc(S.notes[w.id] || '') + '</textarea>' : '') +
     '</div>';
@@ -438,7 +483,12 @@ var KIND = { intro: '认识新词', id2zh: '看词选义', zh2id: '看义选词'
 
 function startSession(mode) {
   var t = today(), q = [];
-  if (mode === 'cram') {
+  if (mode === 'fav') {
+    // 收藏练习：每个词先认一遍，再自己拼出来；不影响复习计划
+    var favs = shuffle(WORDS.filter(function (w) { return S.fav[w.id]; })).slice(0, 30);
+    shuffle(favs.slice()).forEach(function (w) { q.push({ w: w, kind: 'id2zh', phase: 'cram' }); });
+    shuffle(favs.slice()).forEach(function (w) { q.push({ w: w, kind: 'type', phase: 'cram' }); });
+  } else if (mode === 'cram') {
     var weak = WORDS.filter(function (w) { return S.cards[w.id]; }).sort(function (a, b) {
       var ca = S.cards[a.id], cb = S.cards[b.id];
       return (cb.lapses - ca.lapses) || (ca.ease - cb.ease) || (ca.iv - cb.iv);
@@ -456,7 +506,7 @@ function startSession(mode) {
   }
   if (!q.length) { toast(mode === 'cram' ? '还没有学过的词，先开始今日学习吧' : '没有可学的内容了'); return; }
   ses = { q: q, pos: 0, asked: 0, right: 0, newCount: 0, revCount: 0, killed: 0, missed: {}, answered: false, finished: false, mode: mode,
-          target: mode === 'cram' ? 0 : fresh.length };   // 这一轮计划学会的新词数
+          target: fresh ? fresh.length : 0 };   // 这一轮计划学会的新词数
   prefetchSession();
   go('study');
 }
@@ -513,6 +563,7 @@ function killCurrent() {
   var start = ses.answered ? ses.pos + 1 : ses.pos;   // 已答完的当前题保留，其余全部移除
   S.known[w.id] = 1;
   delete S.cards[w.id];
+  delete S.fav[w.id];
   ses.killed++;
 
   // 如果是在“认识新词”这一步斩掉的，直接补一个新词顶上，保证今天的新词量不缩水
@@ -601,6 +652,7 @@ function showFeedback(ok, extra) {
   } else {
     fb.innerHTML = '<div class="fb no">✗ ' + (extra.typed ? '你写的是 ' + esc(extra.typed) : '没关系，再看一遍，稍后会重考') + '</div>' +
       wordCard(w, true) +
+      (S.fav[w.id] ? '' : '<button class="btn big favbig" type="button" data-act="fav" data-i="' + w.i + '">☆ 收藏这个词，以后重点练</button>') +
       '<button class="btn primary big" data-act="next">继续<kbd>Enter</kbd></button>';
     fb.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
@@ -638,7 +690,7 @@ function checkTyped(val) {
    ===================================================================== */
 var app = document.getElementById('app');
 var view = 'home';
-var browse = { q: '', showZh: false };
+var browse = { q: '', showZh: false, onlyFav: false };
 
 function go(v) { view = v; render(); window.scrollTo(0, 0); }
 
@@ -695,6 +747,13 @@ function viewHome() {
   }
   h += '</div>';
 
+  var favN = favCount();
+  if (favN) {
+    h += '<div class="card"><h2>收藏的词 <span class="muted" style="font-weight:400">' + favN + ' 个</span></h2>' +
+         '<p class="muted">不会的词点 ☆ 收藏，在这里集中练。练习不影响复习计划。</p>' +
+         '<div class="row"><button class="btn" data-act="favStudy">练习收藏的词</button>' +
+         '<button class="btn" data-act="favList">查看收藏</button></div></div>';
+  }
   var learning = st.learned - st.mature;
   h += '<div class="card"><h2>总进度 <span class="muted" style="font-weight:400">' + (st.learned + st.known) + ' / ' + N + '</span></h2>' +
        '<div class="pbar"><i class="k" style="width:' + (st.known / N * 100) + '%"></i><i class="m" style="width:' + (st.mature / N * 100) + '%"></i><i class="l" style="width:' + (learning / N * 100) + '%"></i></div>' +
@@ -752,7 +811,7 @@ function viewStudy() {
   var h = '<div class="sbar"><button class="x" data-act="quit" title="结束本次学习" aria-label="结束本次学习">✕</button>' +
           '<div class="prog"><i style="width:' + pct + '%"></i></div><span class="cnt">' + (ses.pos + 1) + ' / ' + ses.q.length + '</span></div>';
   h += '<div class="card"><div class="thead"><span class="tag ' + t.phase + '">' + phase + ' · ' + KIND[t.kind] + (t.retry ? ' · 重考' : '') + '</span>' +
-       '<button class="kill" type="button" data-act="skill" title="这个词我已经会了，以后不再出现">斩 · 已经会了<kbd>X</kbd></button></div>';
+       '<span class="tools">' + favBtn(w) + '<button class="kill" type="button" data-act="skill" title="这个词我已经会了，以后不再出现">斩 · 已经会了<kbd>X</kbd></button></span></div>';
 
   if (t.kind === 'intro') {
     h += wordCard(w, true) + '<button class="btn primary big" data-act="next">记住了，下一个<kbd>Enter</kbd></button>';
@@ -783,7 +842,7 @@ function viewSummary() {
     '<div class="stat rev"><b>' + ses.revCount + '</b><span>复习</span></div>' +
     '<div class="stat"><b>' + streakNow() + '</b><span>连续天数</span></div></div>' +
     (ses.killed ? '<p class="muted">本次斩掉 ' + ses.killed + ' 个已经会的词，它们不会再出现。</p>' : '') +
-    '<p>' + (ses.mode === 'cram' ? '加练不影响复习计划，只是多一次提取。' :
+    '<p>' + (ses.mode === 'cram' || ses.mode === 'fav' ? '加练不影响复习计划，只是多一次提取。' :
       '累计已学 <b>' + st.learned + '</b> 个词。明天会有 <b>' + tomorrowDue() + '</b> 个词等你复习——<b>明天回来这一步最关键</b>。') + '</p>' +
     '<button class="btn primary big" data-act="home">回到首页</button></div>';
   if (miss.length) {
@@ -810,10 +869,10 @@ function rowHtml(w, open, showZh) {
   return '<div class="wrow' + (known ? ' known' : '') + (open ? ' open' : '') + '" id="w' + w.i + '">' +
     '<div class="head" data-act="toggle" data-i="' + w.i + '" data-z="' + z + '">' +
     '<span class="no">' + (w.i + 1) + '</span><span class="dot ' + status(w) + '"></span>' +
-    '<span class="w">' + esc(w.id) + '</span><span class="z">' + (showZh && !open ? esc(w.zh) : '') + '</span>' + spk(w.id) + '</div>' +
+    '<span class="w">' + esc(w.id) + '</span><span class="z">' + (showZh && !open ? esc(w.zh) : '') + '</span>' + favBtn(w) + spk(w.id) + '</div>' +
     (open ? '<div class="more"><div class="mzh">' + esc(w.zh) + '</div>' +
       (w.ex ? '<div class="ex" data-act="say" data-t="' + esc(w.ex) + '" title="点击朗读例句">' + exHtml(w) + '<small>' + esc(w.exzh) + '</small></div>' : '') +
-      (w.hint ? '<div class="hint">' + esc(w.hint) + '</div>' : '') +
+      notesHtml(w) +
       '<div class="mfoot"><span class="meta">' + meta + '</span>' +
       '<button class="btn sm' + (known ? '' : ' killb') + '" type="button" data-act="kill" data-i="' + w.i + '" data-z="' + z + '">' +
       (known ? '恢复学习' : '斩 · 已经会了') + '</button></div>' +
@@ -822,7 +881,7 @@ function rowHtml(w, open, showZh) {
 }
 function listCount() {
   var st = stats();
-  return '已斩 ' + st.known + ' · 已学 ' + st.learned + ' · 未学 ' + st.fresh;
+  return '收藏 ' + favCount() + ' · 已斩 ' + st.known + ' · 已学 ' + st.learned + ' · 未学 ' + st.fresh;
 }
 function viewBrowse() {
   return '<h1>1000 词总表</h1>' +
@@ -833,6 +892,7 @@ function viewBrowse() {
       return '<option value="' + u.idx + '">' + (u.words[0] + 1) + '–' + (u.words[u.words.length - 1] + 1) + '　' + esc(u.title) + '</option>';
     }).join('') + '</select>' +
     '<label class="chk"><input type="checkbox" id="showzh"' + (browse.showZh ? ' checked' : '') + '>直接显示全部中文</label>' +
+    '<label class="chk"><input type="checkbox" id="onlyfav"' + (browse.onlyFav ? ' checked' : '') + '>只看收藏</label>' +
     '<span class="muted" id="lcount">' + listCount() + '</span></div>' +
     '<div id="blist"></div>';
 }
@@ -840,10 +900,14 @@ function fillBrowse() {
   var el = document.getElementById('blist');
   if (!el) return;
   var q = browse.q.trim().toLowerCase(), z = browse.showZh, h = '';
-  if (q) {
-    var hits = WORDS.filter(function (w) { return w.id.toLowerCase().indexOf(q) >= 0 || w.zh.indexOf(q) >= 0; });
-    h = '<div class="card">' + (hits.length ? hits.slice(0, 200).map(function (w) { return rowHtml(w, false, z); }).join('') :
-        '<p class="muted">没有找到“' + esc(browse.q) + '”</p>') + '</div>';
+  if (q || browse.onlyFav) {
+    var hits = WORDS.filter(function (w) {
+      if (browse.onlyFav && !S.fav[w.id]) return false;
+      return !q || w.id.toLowerCase().indexOf(q) >= 0 || w.zh.indexOf(q) >= 0;
+    });
+    var empty = q ? '没有找到“' + esc(browse.q) + '”' : '还没有收藏的词。学习时或在词表里点 ☆，就能把不会的词收进来。';
+    h = '<div class="card">' + (hits.length ? hits.slice(0, 300).map(function (w) { return rowHtml(w, false, z); }).join('') :
+        '<p class="muted">' + empty + '</p>') + '</div>';
   } else {
     h = UNITS.map(function (u) {
       return '<div class="card ucard" id="u' + u.idx + '"><h2>' + esc(u.title) +
@@ -969,6 +1033,25 @@ var ACT = {
   },
   giveup: function () { onAnswer(false); },
   skill: function () { killCurrent(); },
+  // 收藏／取消收藏：页面上这个词的所有星标一起更新
+  fav: function (el) {
+    var i = +el.getAttribute('data-i'), w = WORDS[i];
+    if (S.fav[w.id]) delete S.fav[w.id]; else S.fav[w.id] = 1;
+    save();
+    var on = !!S.fav[w.id], bs = document.querySelectorAll('[data-act="fav"][data-i="' + i + '"]');
+    for (var k = 0; k < bs.length; k++) {
+      if (bs[k].classList.contains('favbig')) { bs[k].textContent = on ? '★ 已收藏（再点取消）' : '☆ 收藏这个词，以后重点练'; continue; }
+      bs[k].classList.toggle('on', on);
+      bs[k].textContent = on ? '★' : '☆';
+      bs[k].setAttribute('aria-pressed', on);
+    }
+    var cnt = document.getElementById('lcount');
+    if (cnt) cnt.textContent = listCount();
+    toast(on ? '已收藏：' + w.id : '已取消收藏：' + w.id);
+    if (view === 'browse' && browse.onlyFav && !on) fillBrowse();
+  },
+  favStudy: function () { startSession('fav'); },
+  favList: function () { browse.onlyFav = true; browse.q = ''; go('browse'); },
   testVoice: function () { speak('terima kasih', 'Terima kasih banyak.'); },
   dlAudio: function () { downloadAll(); },
   hideInstall: function () { S.settings.hideInstall = true; save(); render(); },
@@ -982,7 +1065,7 @@ var ACT = {
   kill: function (el) {
     var i = +el.getAttribute('data-i'), w = WORDS[i];
     if (S.known[w.id]) { delete S.known[w.id]; toast('已恢复：' + w.id + '，会重新进入学习'); }
-    else { S.known[w.id] = 1; delete S.cards[w.id]; toast('已斩：' + w.id + '，不会再出现'); }
+    else { S.known[w.id] = 1; delete S.cards[w.id]; delete S.fav[w.id]; toast('已斩：' + w.id + '，不会再出现'); }
     save();
     var row = document.getElementById('w' + i);
     if (row) row.outerHTML = rowHtml(w, true, el.getAttribute('data-z') === '1');
@@ -1050,6 +1133,7 @@ document.addEventListener('change', function (e) {
     speak('Selamat pagi, apa kabar?');
   }
   else if (el.id === 'showzh') { browse.showZh = el.checked; fillBrowse(); }
+  else if (el.id === 'onlyfav') { browse.onlyFav = el.checked; fillBrowse(); }
   else if (el.id === 'jump' && el.value !== '') {
     var target = document.getElementById('u' + el.value);
     if (target) target.scrollIntoView({ block: 'start' });

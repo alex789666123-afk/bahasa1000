@@ -185,7 +185,19 @@ details.method li { margin-bottom: 6px; }
 .ex b { color: var(--accent); }
 .ex small { display: block; font: 14px/1.5 var(--sans); color: var(--muted); }
 .hint { background: var(--gold-soft); border-radius: 12px; padding: 10px 14px; text-align: left; font-size: 14px; margin-bottom: 10px; }
-.hint::before { content: "记忆点　"; color: var(--gold); font-weight: 700; }
+.hint::before { content: "联想　"; color: var(--gold); font-weight: 700; }
+.hint.origin { background: var(--ok-soft); }
+.hint.origin::before { content: "起源　"; color: var(--ok); }
+
+/* 收藏星标 */
+.fav {
+  border: 0; background: none; color: var(--muted); font-size: 22px; line-height: 1; width: 36px; height: 36px;
+  border-radius: 50%; flex: none; padding: 0;
+}
+.fav:hover { background: var(--gold-soft); }
+.fav.on { color: var(--gold); }
+.tools { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.btn.favbig { margin-top: 4px; color: var(--gold); border-color: var(--gold); background: var(--gold-soft); }
 textarea.note {
   width: 100%; border: 1.5px dashed var(--line); background: transparent; color: var(--ink); border-radius: 12px;
   padding: 10px 14px; font: 14px/1.5 var(--sans); resize: vertical; margin-bottom: 14px; outline: none;
