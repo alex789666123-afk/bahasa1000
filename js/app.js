@@ -43,7 +43,7 @@ function defaults() {
     cards: {},            // id -> {iv 间隔天数, ease 难度系数, due 到期日, reps, lapses}
     known: {},            // id -> 1：已经会的词，被“斩”掉，不再出现
     notes: {},            // id -> 自己写的联想
-    settings: { newPerDay: 20, autoPlay: true, rate: 0.85 },
+    settings: { newPerDay: 20, autoPlay: true, rate: 0.85, voiceURI: '', readEx: true },
     daily: { day: 0, newDone: 0, revDone: 0 },
     streak: { last: 0, count: 0 },
     log: {}               // day -> {n 新学, r 复习, c 答对, t 总答题}
@@ -143,35 +143,67 @@ function stats() {
 /* =====================================================================
    语音（浏览器自带的印尼语朗读）
    ===================================================================== */
-var voice = null, voicesLoaded = false;
+var voice = null, voices = [], voicesLoaded = false;
+
+/* 给设备上的语音打分：印尼语优先；高音质、神经网络语音优先 */
+function voiceScore(v) {
+  var n = (v.name || '') + ' ' + (v.voiceURI || ''), s;
+  if (/^id([-_]|$)/i.test(v.lang || '') || /indones/i.test(v.name || '')) s = 100;
+  else if (/^ms([-_]|$)/i.test(v.lang || '')) s = 10;     // 马来语发音相近，实在没有印尼语时兜底
+  else return -1;
+  if (/premium|高音质/i.test(n)) s += 40;
+  else if (/enhanced|优化|增强/i.test(n)) s += 30;
+  if (/natural|neural/i.test(n)) s += 35;
+  if (/google/i.test(n)) s += 15;
+  if (/compact/i.test(n)) s -= 5;
+  return s;
+}
+function voiceLabel(v) {
+  var n = (v.name || '') + ' ' + (v.voiceURI || ''), q = '标准音质';
+  if (/premium|高音质/i.test(n)) q = '高音质';
+  else if (/enhanced|优化|增强/i.test(n)) q = '优化音质';
+  else if (/natural|neural/i.test(n)) q = '神经网络语音，最自然';
+  else if (/google/i.test(n)) q = '在线语音';
+  if (/优化|增强|高音质/.test(v.name || '')) return v.name;     // 名字里已经写了音质，不重复标注
+  return v.name + '（' + (/^ms/i.test(v.lang || '') ? '马来语，' : '') + q + '）';
+}
+function rankVoices(list) {
+  return list.filter(function (v) { return voiceScore(v) >= 0; })
+             .sort(function (a, b) { return voiceScore(b) - voiceScore(a); });
+}
 function loadVoices() {
   if (!('speechSynthesis' in window)) return;
   var vs = speechSynthesis.getVoices();
   if (!vs.length) return;
-  var first = !voicesLoaded;
+  var first = !voicesLoaded, prev = voice, prevN = voices.length;
   voicesLoaded = true;
-  var prev = first ? undefined : voice;
-  voice = vs.filter(function (v) { return /^id([-_]|$)/i.test(v.lang); })[0] ||
-          vs.filter(function (v) { return /indones/i.test(v.name); })[0] ||
-          vs.filter(function (v) { return /^ms([-_]|$)/i.test(v.lang); })[0] || null;
-  if (voice !== prev && (view === 'home' || view === 'settings')) render();
+  voices = rankVoices(vs);
+  // 用户手动选过发音人就用它，否则自动用音质最好的
+  var chosen = S.settings.voiceURI && voices.filter(function (v) { return v.voiceURI === S.settings.voiceURI; })[0];
+  voice = chosen || voices[0] || null;
+  if ((first || voice !== prev || voices.length !== prevN) && (view === 'home' || view === 'settings')) render();
 }
 function hasVoice() { return !!voice; }
-function speak(text) {
+/* 朗读 text；如果给了 then，读完接着读 then（用于“单词 + 例句”连读） */
+function speak(text, then) {
   if (!('speechSynthesis' in window) || !text) return;
   try {
     speechSynthesis.cancel();
-    var u = new SpeechSynthesisUtterance(text.replace(/[—_]/g, ' '));
-    u.lang = voice ? voice.lang : 'id-ID';
-    if (voice) u.voice = voice;
-    u.rate = S.settings.rate;
-    speechSynthesis.speak(u);
+    [text, then].forEach(function (t) {
+      if (!t) return;
+      var u = new SpeechSynthesisUtterance(t.replace(/[—_]/g, ' '));
+      u.lang = voice ? voice.lang : 'id-ID';
+      if (voice) u.voice = voice;
+      u.rate = S.settings.rate;
+      speechSynthesis.speak(u);
+    });
   } catch (e) {}
 }
 if ('speechSynthesis' in window) {
   loadVoices();
   speechSynthesis.onvoiceschanged = loadVoices;
-  setTimeout(loadVoices, 600);
+  // 有些浏览器（尤其 iPhone）不触发上面的事件，过一会儿再主动取几次
+  [600, 1500, 3500].forEach(function (ms) { setTimeout(loadVoices, ms); });
 }
 
 /* =====================================================================
@@ -446,7 +478,8 @@ function render() {
   app.innerHTML = fn();
   if (view === 'study' && ses && !ses.finished) {
     var t = curTask();
-    if (S.settings.autoPlay && (t.kind === 'intro' || t.kind === 'id2zh' || t.kind === 'listen')) speak(t.w.id);
+    if (S.settings.autoPlay && t.kind === 'intro') speak(t.w.id, S.settings.readEx ? t.w.ex : '');
+    else if (S.settings.autoPlay && (t.kind === 'id2zh' || t.kind === 'listen')) speak(t.w.id);
     var inp = document.getElementById('ans');
     if (inp) inp.focus();
   }
@@ -709,8 +742,23 @@ function viewSettings() {
     '<div class="set"><div>每天新词数量<small>新词越多，之后每天的复习量也越大。拿不准就选 20。</small></div><select data-set="newPerDay">' + opt + '</select></div>' +
     '<div class="set"><div>自动朗读<small>出现单词时自动播放发音</small></div><input type="checkbox" data-set="autoPlay"' + (S.settings.autoPlay ? ' checked' : '') + ' style="width:20px;height:20px"></div>' +
     '<div class="set"><div>朗读语速<small>当前 ' + S.settings.rate.toFixed(2) + ' 倍</small></div><input type="range" min="0.5" max="1.2" step="0.05" value="' + S.settings.rate + '" data-set="rate"></div>' +
-    '<div class="set"><div>语音状态<small>' + (hasVoice() ? '已找到：' + esc(voice.name) : '未检测到印尼语语音。' + voiceHelp()) + '</small></div>' +
-    '<button class="btn" data-act="say" data-t="Selamat pagi, apa kabar?">试听</button></div></div>' +
+    (voices.length ?
+      '<div class="set"><div>发音人<small>已按音质从高到低排列；换一个再点“试听”比较</small></div><select data-set="voiceURI">' +
+      voices.map(function (v) {
+        return '<option value="' + esc(v.voiceURI) + '"' + (voice === v ? ' selected' : '') + '>' + esc(voiceLabel(v)) + '</option>';
+      }).join('') + '</select></div>'
+      : '<div class="set"><div>发音人<small>未检测到印尼语语音。' + voiceHelp() + '</small></div></div>') +
+    '<div class="set"><div>学新词时连读例句<small>读完单词接着读例句，整句的语调比单个词自然</small></div>' +
+    '<input type="checkbox" data-set="readEx"' + (S.settings.readEx ? ' checked' : '') + ' style="width:20px;height:20px"></div>' +
+    '<div class="set"><div>试听当前发音<small>' + (voice ? esc(voice.name) : '暂无可用语音') + '</small></div>' +
+    '<button class="btn" data-act="say" data-t="Selamat pagi, apa kabar? Saya mau belajar bahasa Indonesia.">试听</button></div></div>' +
+
+    '<div class="card"><h2>想要更自然的发音</h2>' +
+    '<p class="muted">发音用的是设备自带的语音，音质由设备决定。下面的办法可以换成更好的：</p><ul class="steps">' +
+    '<li><b>iPhone：</b>设置 → 辅助功能 → 朗读内容 → 声音 → 印度尼西亚文 → 点语音名字 → 下载“优化音质”版本。' +
+    '下载后把本应用从后台彻底划掉再打开，回到这里在“发音人”里选它。' +
+    '<span class="muted">部分 iOS 版本不向网页开放高音质语音；如果下载后列表里仍然没有，说明你的系统不支持。</span></li>' +
+    '<li><b>电脑：</b>用 <b>Edge</b> 浏览器打开，它自带 Microsoft Gadis／Ardi 神经网络语音，是系统语音里最自然的。</li></ul></div>' +
 
     '<div class="card"><h2>学习数据</h2><p class="muted">已学 ' + st.learned + ' 词 · 已掌握 ' + st.mature + ' 词 · 已斩 ' + st.known + ' 词 · 累计答题 ' + tot + ' 次' +
     (tot ? ' · 总正确率 ' + Math.round(cor / tot * 100) + '%' : '') + '</p>' +
@@ -821,6 +869,11 @@ document.addEventListener('change', function (e) {
   var el = e.target, k = el.getAttribute && el.getAttribute('data-set');
   if (k === 'newPerDay') { S.settings.newPerDay = +el.value; save(); toast('已保存'); }
   else if (k === 'autoPlay') { S.settings.autoPlay = el.checked; save(); }
+  else if (k === 'readEx') { S.settings.readEx = el.checked; save(); }
+  else if (k === 'voiceURI') {
+    S.settings.voiceURI = el.value; save(); loadVoices(); render();
+    speak('Selamat pagi, apa kabar?');
+  }
   else if (el.id === 'showzh') { browse.showZh = el.checked; fillBrowse(); }
   else if (el.id === 'jump' && el.value !== '') {
     var target = document.getElementById('u' + el.value);
@@ -872,7 +925,7 @@ try {
 } catch (e) {}
 
 /* 供自测与调试使用 */
-window.__indo = { WORDS: WORDS, UNITS: UNITS, state: function () { return S; }, session: function () { return ses; } };
+window.__indo = { WORDS: WORDS, UNITS: UNITS, rankVoices: rankVoices, voiceLabel: voiceLabel, state: function () { return S; }, session: function () { return ses; } };
 
 render();
 })();
