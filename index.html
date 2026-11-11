@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>印尼语 1000 词</title>
+<!-- 手机 App 形态：添加到主屏幕后全屏、离线运行 -->
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="印尼语1000">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#f7f3ec" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#16181b" media="(prefers-color-scheme: dark)">
+<meta name="format-detection" content="telephone=no">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-in">
+    <div class="brand"><span class="flag" aria-hidden="true"></span><span>印尼语 <b>1000</b> 词</span></div>
+    <nav class="nav" aria-label="主导航">
+      <button data-nav="home">今日</button>
+      <button data-nav="browse">1000 词表</button>
+      <button data-nav="guide">发音与语法</button>
+      <button data-nav="settings">设置</button>
+    </nav>
+  </div>
+</header>
+<main id="app"></main>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script src="data/words-1.js"></script>
+<script src="data/words-2.js"></script>
+<script src="data/words-3.js"></script>
+<script src="data/words-4.js"></script>
+<script src="data/words-5.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

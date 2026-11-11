@@ -1,0 +1,16 @@
+{
+  "name": "印尼语 1000 词",
+  "short_name": "印尼语1000",
+  "description": "用间隔重复和主动回忆，学会最常用的 1000 个印尼语单词",
+  "lang": "zh-CN",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f7f3ec",
+  "theme_color": "#f7f3ec",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
