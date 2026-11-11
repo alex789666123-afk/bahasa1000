@@ -452,18 +452,36 @@ function startSession(mode) {
     // 2) 再学新词：每 5 个一组，看完立刻进行三轮由易到难的回忆
     var quota = mode === 'extra' ? 10 : Math.max(0, S.settings.newPerDay - daily().newDone);
     var fresh = WORDS.filter(function (w) { return !S.cards[w.id] && !S.known[w.id]; }).slice(0, quota);
-    for (var i = 0; i < fresh.length; i += BATCH) {
-      var b = fresh.slice(i, i + BATCH);
-      b.forEach(function (w) { q.push({ w: w, kind: 'intro', phase: 'learn' }); });
-      shuffle(b.slice()).forEach(function (w) { q.push({ w: w, kind: 'id2zh', phase: 'learn', step: 1 }); });
-      shuffle(b.slice()).forEach(function (w) { q.push({ w: w, kind: 'zh2id', phase: 'learn', step: 2 }); });
-      shuffle(b.slice()).forEach(function (w) { q.push({ w: w, kind: 'type', phase: 'learn', step: 3 }); });
-    }
+    pushBatches(q, fresh);
   }
   if (!q.length) { toast(mode === 'cram' ? '还没有学过的词，先开始今日学习吧' : '没有可学的内容了'); return; }
-  ses = { q: q, pos: 0, asked: 0, right: 0, newCount: 0, revCount: 0, killed: 0, missed: {}, answered: false, finished: false, mode: mode };
+  ses = { q: q, pos: 0, asked: 0, right: 0, newCount: 0, revCount: 0, killed: 0, missed: {}, answered: false, finished: false, mode: mode,
+          target: mode === 'cram' ? 0 : fresh.length };   // 这一轮计划学会的新词数
   prefetchSession();
   go('study');
+}
+
+/* 把一批新词排进队列：每 5 个一组，先逐个认识，再三轮由易到难地回忆 */
+function pushBatches(q, words) {
+  for (var i = 0; i < words.length; i += BATCH) {
+    var b = words.slice(i, i + BATCH);
+    b.forEach(function (w) { q.push({ w: w, kind: 'intro', phase: 'learn' }); });
+    shuffle(b.slice()).forEach(function (w) { q.push({ w: w, kind: 'id2zh', phase: 'learn', step: 1 }); });
+    shuffle(b.slice()).forEach(function (w) { q.push({ w: w, kind: 'zh2id', phase: 'learn', step: 2 }); });
+    shuffle(b.slice()).forEach(function (w) { q.push({ w: w, kind: 'type', phase: 'learn', step: 3 }); });
+  }
+}
+
+/* 队列走完时：如果因为中途斩词，学会的新词还没达到计划数，就再补一组没斩过的新词 */
+function topUp() {
+  if (!ses || ses.mode === 'cram') return false;
+  var need = (ses.target || 0) - ses.newCount;
+  if (need <= 0) return false;
+  var more = WORDS.filter(function (w) { return !S.cards[w.id] && !S.known[w.id]; }).slice(0, need);
+  if (!more.length) return false;
+  pushBatches(ses.q, more);
+  prefetchSession();
+  return true;
 }
 
 function curTask() { return ses.q[ses.pos]; }
@@ -471,8 +489,18 @@ function curTask() { return ses.q[ses.pos]; }
 function makeOpts(t) {
   if (t.opts) return t.opts;
   var w = t.w;
-  var pool = UNITS[w.unit].words.map(function (i) { return WORDS[i]; })
-    .filter(function (x) { return x !== w && x.zh !== w.zh; });
+  var ok = function (x) { return x !== w && x.zh !== w.zh; };
+  var unit = UNITS[w.unit].words.map(function (i) { return WORDS[i]; }).filter(ok);
+  // 已经斩掉的词不再当选项
+  var pool = unit.filter(function (x) { return !S.known[x.id]; });
+  // 本单元没斩的词不够用时，从前后相邻的词里补
+  for (var d = 1; pool.length < 6 && d < WORDS.length; d++) {
+    [w.i - d, w.i + d].forEach(function (i) {
+      var x = WORDS[i];
+      if (x && ok(x) && !S.known[x.id] && pool.indexOf(x) < 0) pool.push(x);
+    });
+  }
+  if (pool.length < 3) pool = unit;        // 几乎全部斩光了，才不得不用回斩掉的词
   t.opts = shuffle(shuffle(pool).slice(0, 3).concat([w]));
   return t.opts;
 }
@@ -505,7 +533,7 @@ function killCurrent() {
   toast('已斩：' + w.id + '（可在词表里恢复）');
   if (ses.answered) ses.pos++;
   ses.answered = false;
-  if (ses.pos >= ses.q.length) ses.finished = true;
+  if (ses.pos >= ses.q.length && !topUp()) ses.finished = true;
   render();
 }
 
@@ -583,7 +611,7 @@ function next() {
   if (!ses) return;
   ses.pos++;
   ses.answered = false;
-  if (ses.pos >= ses.q.length) ses.finished = true;
+  if (ses.pos >= ses.q.length && !topUp()) ses.finished = true;
   render();
 }
 
