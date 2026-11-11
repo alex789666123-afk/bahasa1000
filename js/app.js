@@ -43,7 +43,7 @@ function defaults() {
     cards: {},            // id -> {iv 间隔天数, ease 难度系数, due 到期日, reps, lapses}
     known: {},            // id -> 1：已经会的词，被“斩”掉，不再出现
     notes: {},            // id -> 自己写的联想
-    settings: { newPerDay: 20, autoPlay: true, rate: 0.85, voiceURI: '', readEx: true },
+    settings: { newPerDay: 20, autoPlay: true, rate: 0.85, voiceURI: '', readEx: true, useRec: true },
     daily: { day: 0, newDone: 0, revDone: 0 },
     streak: { last: 0, count: 0 },
     log: {}               // day -> {n 新学, r 复习, c 答对, t 总答题}
@@ -183,22 +183,165 @@ function loadVoices() {
   voice = chosen || voices[0] || null;
   if ((first || voice !== prev || voices.length !== prevN) && (view === 'home' || view === 'settings')) render();
 }
-function hasVoice() { return !!voice; }
-/* 朗读 text；如果给了 then，读完接着读 then（用于“单词 + 例句”连读） */
-function speak(text, then) {
-  if (!('speechSynthesis' in window) || !text) return;
+/* ---------- 录制语音（data/audio.js 列出哪些词和例句有录音） ---------- */
+var PACK = window.AUDIO_PACK || null;
+var REC = { w: {}, s: {} }, EX2SLUG = {};
+function slug(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''); }
+if (PACK) {
+  (PACK.w || []).forEach(function (k) { REC.w[k] = 1; });
+  (PACK.s || []).forEach(function (k) { REC.s[k] = 1; });
+}
+WORDS.forEach(function (w) { w.slug = slug(w.id); if (w.ex) EX2SLUG[w.ex] = w.slug; });
+
+function usingRec() { return !!PACK && S.settings.useRec !== false; }
+function packCount() { return PACK ? (PACK.w || []).length + (PACK.s || []).length : 0; }
+/* 这段文字有没有录音：先按例句找，再按单词找 */
+function recUrl(text) {
+  if (!usingRec() || !text) return null;
+  var sl = EX2SLUG[text];
+  if (sl && REC.s[sl]) return 'audio/s/' + sl + '.mp3';
+  var w = BYN[norm(text)];
+  if (w && REC.w[w.slug]) return 'audio/w/' + w.slug + '.mp3';
+  return null;
+}
+function hasVoice() { return !!voice || usingRec(); }
+
+/* 全程只用一个播放器：iPhone 要求先由用户点一下“解锁”，之后才允许自动播放 */
+var SILENT = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
+var player = null, playQ = [], playToken = 0, blobs = {}, blobKeys = [];
+function getPlayer() {
+  if (!player) {
+    player = new Audio();
+    player.preload = 'auto';
+    var onDone = function () { if (String(player.src).indexOf('data:') !== 0) playNext(); };
+    player.addEventListener('ended', onDone);
+    player.addEventListener('error', onDone);
+  }
+  return player;
+}
+function unlockAudio() {
+  document.removeEventListener('touchend', unlockAudio, true);
+  document.removeEventListener('click', unlockAudio, true);
+  if (!PACK) return;
   try {
-    speechSynthesis.cancel();
-    [text, then].forEach(function (t) {
-      if (!t) return;
-      var u = new SpeechSynthesisUtterance(t.replace(/[—_]/g, ' '));
-      u.lang = voice ? voice.lang : 'id-ID';
-      if (voice) u.voice = voice;
-      u.rate = S.settings.rate;
-      speechSynthesis.speak(u);
-    });
+    var p = getPlayer();
+    if (p.src) return;
+    p.src = SILENT;
+    var pr = p.play();
+    if (pr && pr.catch) pr.catch(function () {});
   } catch (e) {}
 }
+document.addEventListener('touchend', unlockAudio, true);
+document.addEventListener('click', unlockAudio, true);
+
+/* 把音频取成内存里的地址再播放：这样离线缓存和 iPhone 的播放器都不会出问题 */
+function loadBlob(url) {
+  if (blobs[url]) return Promise.resolve(blobs[url]);
+  return fetch(url).then(function (r) {
+    if (!r.ok) throw new Error('audio ' + r.status);
+    return r.blob();
+  }).then(function (b) {
+    if (blobs[url]) return blobs[url];
+    blobs[url] = URL.createObjectURL(b);
+    blobKeys.push(url);
+    if (blobKeys.length > 400) { var old = blobKeys.shift(); URL.revokeObjectURL(blobs[old]); delete blobs[old]; }
+    return blobs[url];
+  });
+}
+function audioRate() { return Math.min(1.5, Math.max(0.5, S.settings.rate / 0.85)); }
+/* 设置页显示的语速：录音以原速为 1.00 倍 */
+function shownRate() { return (usingRec() ? audioRate() : S.settings.rate).toFixed(2); }
+
+function ttsSpeak(text, done) {
+  if (!('speechSynthesis' in window)) { if (done) done(); return; }
+  try {
+    var u = new SpeechSynthesisUtterance(text.replace(/[—_]/g, ' '));
+    u.lang = voice ? voice.lang : 'id-ID';
+    if (voice) u.voice = voice;
+    u.rate = S.settings.rate;
+    if (done) { u.onend = done; u.onerror = done; }
+    speechSynthesis.speak(u);
+  } catch (e) { if (done) done(); }
+}
+function stopSpeaking() {
+  playQ = [];
+  playToken++;
+  try { if (player) player.pause(); } catch (e) {}
+  try { if ('speechSynthesis' in window) speechSynthesis.cancel(); } catch (e) {}
+}
+function playNext() {
+  var item = playQ.shift();
+  if (!item) return;
+  var token = playToken;
+  var fallback = function () { if (token === playToken) ttsSpeak(item.text, function () { if (token === playToken) playNext(); }); };
+  if (!item.url) { fallback(); return; }
+  loadBlob(item.url).then(function (src) {
+    if (token !== playToken) return;
+    var p = getPlayer();
+    p.src = src;
+    p.defaultPlaybackRate = p.playbackRate = audioRate();
+    var pr = p.play();
+    if (pr && pr.catch) pr.catch(fallback);
+  }, fallback);
+}
+/* 朗读 text；如果给了 then，读完接着读 then（用于“单词 + 例句”连读）。
+   有录音就播录音，没有就退回设备自带的语音。 */
+function speak(text, then) {
+  if (!text) return;
+  stopSpeaking();
+  playQ = [text, then].filter(Boolean).map(function (t) { return { text: t, url: recUrl(t) }; });
+  playNext();
+}
+/* 开始学习时，把这一轮要用的发音先悄悄取好，播放时就没有延迟 */
+function prefetchSession() {
+  if (!usingRec() || !ses) return;
+  var seen = {}, urls = [], i = 0;
+  ses.q.forEach(function (t) {
+    [t.w.id, t.w.ex].forEach(function (x) {
+      var u = recUrl(x);
+      if (u && !seen[u]) { seen[u] = 1; urls.push(u); }
+    });
+  });
+  urls = urls.slice(0, 120);
+  (function next() { if (i < urls.length) loadBlob(urls[i++]).then(next, next); })();
+}
+/* 一次性把全部发音存到设备里，之后断网也能听 */
+var dlBusy = false;
+function downloadAll() {
+  if (dlBusy || !PACK) return;
+  dlBusy = true;
+  var urls = (PACK.w || []).map(function (k) { return 'audio/w/' + k + '.mp3'; })
+    .concat((PACK.s || []).map(function (k) { return 'audio/s/' + k + '.mp3'; }));
+  var i = 0, done = 0, fail = 0, total = urls.length;
+  function info(t) { var el = document.getElementById('dlinfo'); if (el) el.textContent = t; }
+  function one() {
+    if (i >= total) return;
+    fetch(urls[i++]).then(function (r) { if (!r.ok) throw 0; return r.arrayBuffer(); })
+      .catch(function () { fail++; })
+      .then(function () {
+        done++;
+        if (done % 20 === 0 || done === total) info('下载中 ' + done + ' / ' + total);
+        if (done < total) { one(); return; }
+        dlBusy = false;
+        S.settings.audioDone = fail === 0;
+        save();
+        info(fail ? '有 ' + fail + ' 段没下载成功，请联网后再点一次' : '已全部下载，断网也能听');
+        toast(fail ? '部分发音没下载成功' : '全部发音已下载');
+      });
+  }
+  info('下载中 0 / ' + total);
+  for (var k = 0; k < 4; k++) one();
+}
+function recRows() {
+  if (!PACK) return '';
+  return '<div class="set"><div>发音来源<small>录制语音更自然，在任何设备上听起来都一样</small></div><select data-set="useRec">' +
+    '<option value="1"' + (usingRec() ? ' selected' : '') + '>录制语音（推荐）</option>' +
+    '<option value="0"' + (usingRec() ? '' : ' selected') + '>设备自带语音</option></select></div>' +
+    '<div class="set"><div>下载全部发音<small id="dlinfo">' +
+    (S.settings.audioDone ? '已全部下载，断网也能听' : '共 ' + packCount() + ' 段。不下载也能用：听过的会自动保存') + '</small></div>' +
+    '<button class="btn" type="button" data-act="dlAudio">' + (S.settings.audioDone ? '重新下载' : '下载') + '</button></div>';
+}
+
 if ('speechSynthesis' in window) {
   loadVoices();
   speechSynthesis.onvoiceschanged = loadVoices;
@@ -319,6 +462,7 @@ function startSession(mode) {
   }
   if (!q.length) { toast(mode === 'cram' ? '还没有学过的词，先开始今日学习吧' : '没有可学的内容了'); return; }
   ses = { q: q, pos: 0, asked: 0, right: 0, newCount: 0, revCount: 0, killed: 0, missed: {}, answered: false, finished: false, mode: mode };
+  prefetchSession();
   go('study');
 }
 
@@ -741,8 +885,8 @@ function viewSettings() {
   return '<div class="card"><h2>学习设置</h2>' +
     '<div class="set"><div>每天新词数量<small>新词越多，之后每天的复习量也越大。拿不准就选 20。</small></div><select data-set="newPerDay">' + opt + '</select></div>' +
     '<div class="set"><div>自动朗读<small>出现单词时自动播放发音</small></div><input type="checkbox" data-set="autoPlay"' + (S.settings.autoPlay ? ' checked' : '') + ' style="width:20px;height:20px"></div>' +
-    '<div class="set"><div>朗读语速<small>当前 ' + S.settings.rate.toFixed(2) + ' 倍</small></div><input type="range" min="0.5" max="1.2" step="0.05" value="' + S.settings.rate + '" data-set="rate"></div>' +
-    (voices.length ?
+    '<div class="set"><div>朗读语速<small>当前 ' + shownRate() + ' 倍</small></div><input type="range" min="0.5" max="1.2" step="0.05" value="' + S.settings.rate + '" data-set="rate"></div>' +
+    recRows() + (usingRec() ? '' : voices.length ?
       '<div class="set"><div>发音人<small>已按音质从高到低排列；换一个再点“试听”比较</small></div><select data-set="voiceURI">' +
       voices.map(function (v) {
         return '<option value="' + esc(v.voiceURI) + '"' + (voice === v ? ' selected' : '') + '>' + esc(voiceLabel(v)) + '</option>';
@@ -750,15 +894,15 @@ function viewSettings() {
       : '<div class="set"><div>发音人<small>未检测到印尼语语音。' + voiceHelp() + '</small></div></div>') +
     '<div class="set"><div>学新词时连读例句<small>读完单词接着读例句，整句的语调比单个词自然</small></div>' +
     '<input type="checkbox" data-set="readEx"' + (S.settings.readEx ? ' checked' : '') + ' style="width:20px;height:20px"></div>' +
-    '<div class="set"><div>试听当前发音<small>' + (voice ? esc(voice.name) : '暂无可用语音') + '</small></div>' +
-    '<button class="btn" data-act="say" data-t="Selamat pagi, apa kabar? Saya mau belajar bahasa Indonesia.">试听</button></div></div>' +
+    '<div class="set"><div>试听当前发音<small>' + (usingRec() ? '录制语音' : voice ? esc(voice.name) : '暂无可用语音') + '</small></div>' +
+    '<button class="btn" type="button" data-act="testVoice">试听</button></div></div>' +
 
-    '<div class="card"><h2>想要更自然的发音</h2>' +
+    (usingRec() ? '' : '<div class="card"><h2>想要更自然的发音</h2>' +
     '<p class="muted">发音用的是设备自带的语音，音质由设备决定。下面的办法可以换成更好的：</p><ul class="steps">' +
     '<li><b>iPhone：</b>设置 → 辅助功能 → 朗读内容 → 声音 → 印度尼西亚文 → 点语音名字 → 下载“优化音质”版本。' +
     '下载后把本应用从后台彻底划掉再打开，回到这里在“发音人”里选它。' +
     '<span class="muted">部分 iOS 版本不向网页开放高音质语音；如果下载后列表里仍然没有，说明你的系统不支持。</span></li>' +
-    '<li><b>电脑：</b>用 <b>Edge</b> 浏览器打开，它自带 Microsoft Gadis／Ardi 神经网络语音，是系统语音里最自然的。</li></ul></div>' +
+    '<li><b>电脑：</b>用 <b>Edge</b> 浏览器打开，它自带 Microsoft Gadis／Ardi 神经网络语音，是系统语音里最自然的。</li></ul></div>') +
 
     '<div class="card"><h2>学习数据</h2><p class="muted">已学 ' + st.learned + ' 词 · 已掌握 ' + st.mature + ' 词 · 已斩 ' + st.known + ' 词 · 累计答题 ' + tot + ' 次' +
     (tot ? ' · 总正确率 ' + Math.round(cor / tot * 100) + '%' : '') + '</p>' +
@@ -797,6 +941,8 @@ var ACT = {
   },
   giveup: function () { onAnswer(false); },
   skill: function () { killCurrent(); },
+  testVoice: function () { speak('terima kasih', 'Terima kasih banyak.'); },
+  dlAudio: function () { downloadAll(); },
   hideInstall: function () { S.settings.hideInstall = true; save(); render(); },
   // 词表：点一下就地展开／收起，显示中文和例句
   toggle: function (el) {
@@ -861,7 +1007,7 @@ document.addEventListener('input', function (e) {
     browse.q = el.value; fillBrowse();
   } else if (el.getAttribute('data-set') === 'rate') {
     S.settings.rate = +el.value; save();
-    el.parentNode.querySelector('small').textContent = '当前 ' + S.settings.rate.toFixed(2) + ' 倍';
+    el.parentNode.querySelector('small').textContent = '当前 ' + shownRate() + ' 倍';
   }
 });
 
@@ -870,6 +1016,7 @@ document.addEventListener('change', function (e) {
   if (k === 'newPerDay') { S.settings.newPerDay = +el.value; save(); toast('已保存'); }
   else if (k === 'autoPlay') { S.settings.autoPlay = el.checked; save(); }
   else if (k === 'readEx') { S.settings.readEx = el.checked; save(); }
+  else if (k === 'useRec') { S.settings.useRec = el.value === '1'; save(); stopSpeaking(); render(); }
   else if (k === 'voiceURI') {
     S.settings.voiceURI = el.value; save(); loadVoices(); render();
     speak('Selamat pagi, apa kabar?');
@@ -925,7 +1072,7 @@ try {
 } catch (e) {}
 
 /* 供自测与调试使用 */
-window.__indo = { WORDS: WORDS, UNITS: UNITS, rankVoices: rankVoices, voiceLabel: voiceLabel, state: function () { return S; }, session: function () { return ses; } };
+window.__indo = { WORDS: WORDS, UNITS: UNITS, rankVoices: rankVoices, voiceLabel: voiceLabel, recUrl: recUrl, pack: function () { return PACK; }, state: function () { return S; }, session: function () { return ses; } };
 
 render();
 })();
